@@ -204,9 +204,7 @@ impl ControllerManager {
     ) -> Result<Value> {
         let cache_key = format!("{}::{}::position", controller, axis);
 
-        dbg!("Checking cache");
         if let Some(val) = cache.get(&cache_key).await {
-            dbg!("Cache hit");
             return Ok(json!({"controller": controller, "axis": axis, "position": val}));
         }
 
@@ -220,7 +218,6 @@ impl ControllerManager {
         let pos = ax.get_position().await?;
         let value = json!(pos);
 
-        dbg!("inserting chache", &cache_key, &value);
         let _ = cache.insert(cache_key.clone(), value.clone()).await;
 
         Ok(json!({"controller": controller, "axis": axis, "position": value}))
