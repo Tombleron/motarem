@@ -23,6 +23,7 @@ impl ControllerManager {
     pub fn new(config: ManagerConfig) -> Self {
         let cache = Cache::builder()
             .max_capacity(config.cache_capacity as u64)
+            .time_to_live(config.default_ttl)
             .build();
 
         let (tx, rx) = mpsc::channel::<Command>(100);
