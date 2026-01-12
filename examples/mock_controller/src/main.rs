@@ -1,12 +1,12 @@
 use anyhow::Result;
-use motarem::{
+use motarem_core::{
     axis::{
         movement_parameters::MovementParams, state::AxisState, state_info::AxisStateInfo, Axis,
     },
     controller_manager::{command::Command, config::ManagerConfig, ControllerManager},
     motor_controller::MotorController,
-    socket_server::{config::SocketServerConfig, SocketServer},
 };
+use motarem_server::socket_server::{config::SocketServerConfig, SocketServer};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::oneshot;
 use tracing::{error, info};

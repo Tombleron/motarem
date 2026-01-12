@@ -6,16 +6,18 @@ use config::ManagerConfig;
 
 use anyhow::Result;
 use moka::future::Cache;
-use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 
-use crate::{axis::movement_parameters::MovementParams, motor_controller::MotorController};
+use crate::{
+    axis::movement_parameters::MovementParams, controller_manager::command::MotaremResponse,
+    motor_controller::MotorController,
+};
 
 pub struct ControllerManager {
     controllers: Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
     cmd_sender: mpsc::Sender<Command>,
-    cache: Cache<String, Value>,
+    cache: Cache<String, MotaremResponse>,
     config: ManagerConfig,
 }
 
@@ -66,7 +68,7 @@ impl ControllerManager {
         Ok(())
     }
 
-    pub fn cache(&self) -> &Cache<String, Value> {
+    pub fn cache(&self) -> &Cache<String, MotaremResponse> {
         &self.cache
     }
 
@@ -76,7 +78,7 @@ impl ControllerManager {
 
     async fn command_loop(
         controllers: Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
-        cache: Cache<String, Value>,
+        cache: Cache<String, MotaremResponse>,
         mut rx: mpsc::Receiver<Command>,
     ) {
         while let Some(cmd) = rx.recv().await {
@@ -166,12 +168,12 @@ impl ControllerManager {
 
     async fn handle_move(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
-        cache: &Cache<String, Value>,
+        cache: &Cache<String, MotaremResponse>,
         controller: &str,
         axis: &str,
         target: f64,
         params: Option<MovementParams>,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let ctrls = controllers.read().await;
         let ctrl = ctrls
             .get(controller)
@@ -181,32 +183,32 @@ impl ControllerManager {
 
         let cache_key = format!("{}::{}::position", controller, axis);
         cache.invalidate(&cache_key).await;
-        Ok(json!({"status": "ok", "action": "move", "target": target}))
+        Ok(MotaremResponse::Move { target })
     }
 
     async fn handle_stop(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
         controller: &str,
         axis: &str,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let ctrls = controllers.read().await;
         let ctrl = ctrls
             .get(controller)
             .ok_or_else(|| anyhow::anyhow!("Controller not found: {}", controller))?;
         ctrl.stop(axis).await?;
-        Ok(json!({"status": "ok", "action": "stop"}))
+        Ok(MotaremResponse::Stop)
     }
 
     async fn handle_get_pos(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
-        cache: &Cache<String, Value>,
+        cache: &Cache<String, MotaremResponse>,
         controller: &str,
         axis: &str,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let cache_key = format!("{}::{}::position", controller, axis);
 
         if let Some(val) = cache.get(&cache_key).await {
-            return Ok(json!({"controller": controller, "axis": axis, "position": val}));
+            return Ok(val);
         }
 
         let ctrls = controllers.read().await;
@@ -217,22 +219,27 @@ impl ControllerManager {
         let ax = ctrl.get_axis(axis)?;
 
         let pos = ax.get_position().await?;
-        let value = json!(pos);
+
+        let value = MotaremResponse::Pos {
+            controller: controller.to_string(),
+            axis: axis.to_string(),
+            position: pos,
+        };
 
         let _ = cache.insert(cache_key.clone(), value.clone()).await;
 
-        Ok(json!({"controller": controller, "axis": axis, "position": value}))
+        Ok(value)
     }
 
     async fn handle_get_state(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
-        cache: &Cache<String, Value>,
+        cache: &Cache<String, MotaremResponse>,
         controller: &str,
         axis: &str,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let cache_key = format!("{}::{}::status", controller, axis);
         if let Some(val) = cache.get(&cache_key).await {
-            return Ok(json!({"controller": controller, "axis": axis, "status": val}));
+            return Ok(val);
         }
         let ctrls = controllers.read().await;
         let ctrl = ctrls
@@ -240,78 +247,97 @@ impl ControllerManager {
             .ok_or_else(|| anyhow::anyhow!("Controller not found: {}", controller))?;
         let ax = ctrl.get_axis(axis)?;
         let state_info = ax.get_state().await?;
-        let status_json = json!({
-            "state": format!("{:?}", state_info.state),
-            "message": state_info.message,
-            "limit_switches": format!("{:?}", state_info.limit_switches),
-        });
-        let _ = cache.insert(cache_key.clone(), status_json.clone()).await;
-        Ok(json!({"controller": controller, "axis": axis, "status": status_json}))
+
+        let value = MotaremResponse::State {
+            controller: controller.to_string(),
+            axis: axis.to_string(),
+            state: state_info,
+        };
+
+        let _ = cache.insert(cache_key.clone(), value.clone()).await;
+        Ok(value)
     }
 
     async fn handle_get_attr(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
-        cache: &Cache<String, Value>,
+        cache: &Cache<String, MotaremResponse>,
         controller: &str,
         axis: &str,
         attr: &str,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let cache_key = format!("{}::{}::{}", controller, axis, attr);
         if let Some(val) = cache.get(&cache_key).await {
-            return Ok(
-                json!({"controller": controller, "axis": axis, "attribute": attr, "value": val}),
-            );
+            return Ok(val);
         }
-        // Not in cache or expired: compute
         let ctrls = controllers.read().await;
         let ctrl = ctrls
             .get(controller)
             .ok_or_else(|| anyhow::anyhow!("Controller not found: {}", controller))?;
         let value = ctrl.get_attribute(axis, attr).await?;
-        let json_value = json!(value);
-        // Insert to cache with TTL
-        let _ = cache.insert(cache_key.clone(), json_value.clone()).await;
-        Ok(json!({"controller": controller, "axis": axis, "attribute": attr, "value": json_value}))
+
+        let value = MotaremResponse::Attribute {
+            controller: controller.to_string(),
+            axis: axis.to_string(),
+            attribute: attr.to_string(),
+            value,
+        };
+
+        let _ = cache.insert(cache_key.clone(), value.clone()).await;
+
+        Ok(value)
     }
 
     async fn handle_get_available_params(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
         controller: &str,
         axis: &str,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let ctrls = controllers.read().await;
         let ctrl = ctrls
             .get(controller)
             .ok_or_else(|| anyhow::anyhow!("Controller not found: {}", controller))?;
         let params = ctrl.get_available_attributes(axis).await?;
-        Ok(json!({"controller": controller, "axis": axis, "available_params": params}))
+
+        let response = MotaremResponse::AvailableParams {
+            controller: controller.to_string(),
+            axis: axis.to_string(),
+            available_params: params,
+        };
+
+        Ok(response)
     }
 
     async fn handle_get_supported_movement_params(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
         controller: &str,
         axis: &str,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let ctrls = controllers.read().await;
         let ctrl = ctrls
             .get(controller)
             .ok_or_else(|| anyhow::anyhow!("Controller not found: {}", controller))?;
         let params = ctrl.get_supported_movement_params(axis).await?;
-        Ok(json!({"controller": controller, "axis": axis, "supported_movement_params": params}))
+        Ok(MotaremResponse::SupportedMovementParams {
+            controller: controller.to_string(),
+            axis: axis.to_string(),
+            supported_movement_params: params,
+        })
     }
 
     async fn handle_list_controllers(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let ctrls = controllers.read().await;
         let controller_names: Vec<String> = ctrls.keys().cloned().collect();
-        Ok(json!({"controllers": controller_names}))
+        Ok(MotaremResponse::ListControllers {
+            controllers: controller_names,
+        })
     }
 
     async fn handle_list_axes(
         controllers: &Arc<RwLock<HashMap<String, Arc<dyn MotorController>>>>,
         controller: &str,
-    ) -> Result<Value> {
+    ) -> Result<MotaremResponse> {
         let ctrls = controllers.read().await;
         let ctrl = ctrls
             .get(controller)
@@ -319,6 +345,9 @@ impl ControllerManager {
 
         let axes = ctrl.axes();
         let axis_names: Vec<String> = axes.iter().map(|ax| ax.name().to_string()).collect();
-        Ok(json!({"controller": controller, "axes": axis_names}))
+        Ok(MotaremResponse::ListAxes {
+            controller: controller.to_string(),
+            axes: axis_names,
+        })
     }
 }

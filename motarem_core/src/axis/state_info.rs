@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 use super::limit_switches::LimitSwitches;
 use super::state::AxisState;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxisStateInfo {
     pub state: AxisState,
     pub message: Option<String>,

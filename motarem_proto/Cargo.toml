@@ -1,0 +1,15 @@
+[package]
+name = "motarem_proto"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "motarem_proto"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+
+motarem_core = { path = "../motarem_core" }

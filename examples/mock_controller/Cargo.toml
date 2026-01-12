@@ -1,0 +1,15 @@
+[package]
+name = "mock_controller"
+description = "A mock controller for testing purposes"
+edition = "2021"
+
+[dependencies]
+motarem_core = { path =   "../../motarem_core" }
+motarem_proto = { path =  "../../motarem_proto" }
+motarem_server = { path = "../../motarem_server" }
+
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+async-trait = "0.1"

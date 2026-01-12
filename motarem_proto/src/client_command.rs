@@ -1,4 +1,4 @@
-use crate::axis::movement_parameters::MovementParams;
+use motarem_core::axis::movement_parameters::MovementParams;
 
 use serde::{Deserialize, Serialize};
 

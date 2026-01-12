@@ -1,3 +1,4 @@
+use motarem_core::controller_manager::command::MotaremResponse;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7,7 +8,7 @@ pub enum ServerResponse {
     Success {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
-        data: serde_json::Value,
+        data: MotaremResponse,
     },
     #[serde(rename = "error")]
     Error {
@@ -20,7 +21,7 @@ pub enum ServerResponse {
 }
 
 impl ServerResponse {
-    pub fn success(id: Option<String>, data: serde_json::Value) -> Self {
+    pub fn success(id: Option<String>, data: MotaremResponse) -> Self {
         Self::Success { id, data }
     }
 

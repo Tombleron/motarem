@@ -1,8 +1,14 @@
 pub mod config;
 
 use anyhow::Result;
+use config::SocketServerConfig;
 use futures::{SinkExt, StreamExt};
-use serde_json::json;
+use motarem_core::controller_manager::command::MotaremResponse;
+use motarem_core::controller_manager::{command::Command, ControllerManager};
+use motarem_proto::{
+    client_command::ClientCommand, parse_command, serialize_response,
+    server_response::ServerResponse,
+};
 use std::{
     path::Path,
     sync::{
@@ -16,15 +22,6 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LinesCodec};
 use tracing::{debug, error, info, warn};
-
-use crate::{
-    controller_manager::{command::Command, ControllerManager},
-    protocol::{
-        client_command::ClientCommand, parse_command, serialize_response,
-        server_response::ServerResponse,
-    },
-};
-use config::SocketServerConfig;
 
 pub struct SocketServer {
     config: SocketServerConfig,
@@ -180,7 +177,7 @@ impl SocketServer {
     async fn execute_command(
         command: ClientCommand,
         manager: &ControllerManager,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<MotaremResponse> {
         match command {
             ClientCommand::Move {
                 controller,
@@ -291,10 +288,7 @@ impl SocketServer {
                 manager.send_command(cmd).await?;
                 rx.await?
             }
-            ClientCommand::Ping { .. } => Ok(json!({
-                "message": "pong",
-                "timestamp": chrono::Utc::now().to_rfc3339()
-            })),
+            ClientCommand::Ping { .. } => Ok(MotaremResponse::Pong),
         }
     }
 }
