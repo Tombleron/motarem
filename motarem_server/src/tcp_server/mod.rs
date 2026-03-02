@@ -1,18 +1,15 @@
 pub mod config;
 
 use anyhow::Result;
-use config::SocketServerConfig;
+use config::TcpServerConfig;
 use futures::{SinkExt, StreamExt};
 use motarem_core::controller_manager::ControllerManager;
-use std::{
-    path::Path,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use tokio::{
-    net::{UnixListener, UnixStream},
+    net::{TcpListener, TcpStream},
     sync::broadcast,
 };
 use tokio_util::codec::{Framed, LinesCodec};
@@ -20,14 +17,14 @@ use tracing::{debug, error, info, warn};
 
 use crate::server_core::ServerService;
 
-pub struct SocketServer {
-    config: SocketServerConfig,
+pub struct TcpServer {
+    config: TcpServerConfig,
     service: Arc<ServerService>,
     shutdown_tx: Option<broadcast::Sender<()>>,
 }
 
-impl SocketServer {
-    pub fn new(config: SocketServerConfig, manager: Arc<ControllerManager>) -> Self {
+impl TcpServer {
+    pub fn new(config: TcpServerConfig, manager: Arc<ControllerManager>) -> Self {
         Self {
             config,
             service: Arc::new(ServerService::new(manager)),
@@ -35,7 +32,7 @@ impl SocketServer {
         }
     }
 
-    pub fn with_service(config: SocketServerConfig, service: Arc<ServerService>) -> Self {
+    pub fn with_service(config: TcpServerConfig, service: Arc<ServerService>) -> Self {
         Self {
             config,
             service,
@@ -44,12 +41,9 @@ impl SocketServer {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        if Path::new(&self.config.socket_path).exists() {
-            tokio::fs::remove_file(&self.config.socket_path).await?;
-        }
-
-        let listener = UnixListener::bind(&self.config.socket_path)?;
-        info!(socket_path = %self.config.socket_path, "Socket server listening");
+        let bind_addr = self.config.bind_addr.clone();
+        let listener = TcpListener::bind(&bind_addr).await?;
+        info!(bind_addr = %bind_addr, "TCP server listening");
 
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         self.shutdown_tx = Some(shutdown_tx);
@@ -65,10 +59,11 @@ impl SocketServer {
                 tokio::select! {
                     accept_result = listener.accept() => {
                         match accept_result {
-                            Ok((stream, _addr)) => {
+                            Ok((stream, peer_addr)) => {
                                 let current = active_connections.load(Ordering::Relaxed);
                                 if current >= max_connections {
                                     warn!(
+                                        peer_addr = %peer_addr,
                                         current_connections = current,
                                         max_connections = max_connections,
                                         "Maximum connections reached, rejecting new connection"
@@ -78,7 +73,11 @@ impl SocketServer {
 
                                 active_connections.fetch_add(1, Ordering::Relaxed);
                                 let new_count = active_connections.load(Ordering::Relaxed);
-                                debug!(active_connections = new_count, "New client connected");
+                                debug!(
+                                    peer_addr = %peer_addr,
+                                    active_connections = new_count,
+                                    "New TCP client connected"
+                                );
 
                                 let service_clone = Arc::clone(&service);
                                 let mut client_shutdown_rx = shutdown_rx.resubscribe();
@@ -94,20 +93,24 @@ impl SocketServer {
                                     .await;
 
                                     if let Err(e) = result {
-                                        error!(error = %e, "Client handler error");
+                                        error!(error = %e, peer_addr = %peer_addr, "TCP client handler error");
                                     }
 
                                     let remaining = active_connections_clone.fetch_sub(1, Ordering::Relaxed) - 1;
-                                    debug!(active_connections = remaining, "Client disconnected");
+                                    debug!(
+                                        peer_addr = %peer_addr,
+                                        active_connections = remaining,
+                                        "TCP client disconnected"
+                                    );
                                 });
                             }
                             Err(e) => {
-                                error!(error = %e, "Failed to accept connection");
+                                error!(error = %e, "Failed to accept TCP connection");
                             }
                         }
                     }
                     _ = shutdown_rx.recv() => {
-                        info!("Socket server shutting down");
+                        info!("TCP server shutting down");
                         break;
                     }
                 }
@@ -122,16 +125,12 @@ impl SocketServer {
             let _ = shutdown_tx.send(());
         }
 
-        if Path::new(&self.config.socket_path).exists() {
-            tokio::fs::remove_file(&self.config.socket_path).await?;
-        }
-
-        info!("Socket server shutdown complete");
+        info!("TCP server shutdown signal sent");
         Ok(())
     }
 
     async fn handle_client(
-        stream: UnixStream,
+        stream: TcpStream,
         service: Arc<ServerService>,
         shutdown_rx: &mut broadcast::Receiver<()>,
         max_line_len: usize,
@@ -143,26 +142,26 @@ impl SocketServer {
                 line_result = framed.next() => {
                     match line_result {
                         Some(Ok(line)) => {
-                            debug!(command = %line, "Received command");
+                            debug!(command = %line, "Received TCP command");
 
                             let response_line = service.handle_line(&line).await?;
                             if let Err(e) = framed.send(response_line).await {
-                                error!(error = %e, "Failed to send response");
+                                error!(error = %e, "Failed to send TCP response");
                                 break;
                             }
                         }
                         Some(Err(e)) => {
-                            error!(error = %e, "Error reading from client");
+                            error!(error = %e, "Error reading from TCP client");
                             break;
                         }
                         None => {
-                            debug!("Client disconnected");
+                            debug!("TCP client disconnected");
                             break;
                         }
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    debug!("Shutdown signal received, closing client connection");
+                    debug!("Shutdown signal received, closing TCP client connection");
                     break;
                 }
             }
